@@ -20,8 +20,8 @@ to a `src` subdirectory in the workspace.
 
 There must be a stackrc in `/var/lib/jenkins` that provides access to an OVB-capable
 cloud. There must also be an SSH private key there which allows access to a keypair
-in the target cloud called "jenkins". This key will be used to SSH into the nodes
-created by OVB.
+in the target cloud called "jenkins". The private key file should be named
+`id_rsa.jenkins`. This key will be used to SSH into the nodes created by OVB.
 
 There are OVB configurations in coredns-mdns-integration that may need to be updated
 to match the target cloud (images, flavors, etc.).
