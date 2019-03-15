@@ -1,0 +1,162 @@
+#!/bin/bash
+
+set -xe
+set -o pipefail
+
+project=$1
+
+set +x
+. /var/lib/jenkins/stackrc
+set -x
+
+if [ ! -d openstack-virtual-baremetal ]
+then
+    git clone https://git.openstack.org/openstack/openstack-virtual-baremetal
+    # FIXME(bnemec): Remove this hack once the patches have merged
+    pushd openstack-virtual-baremetal
+    git fetch https://git.openstack.org/openstack/openstack-virtual-baremetal refs/changes/62/636762/2 && git checkout FETCH_HEAD
+    popd
+    virtualenv ovb
+fi
+. ./ovb/bin/activate
+cd openstack-virtual-baremetal
+pip install -U setuptools
+pip install . python-openstackclient
+
+openstack stack delete -y mdns-test-master || :
+openstack stack delete -y mdns-test || :
+
+while openstack stack list | grep -q mdns-test
+do
+    sleep 5
+done
+
+cat > env.yaml << EOF
+parameter_defaults:
+  # Recommended to be at least 1 vcpu, 4 GB RAM, 50 GB disk
+  # Type: string
+  baremetal_flavor: baremetal
+
+  # The base image to use for baremetal instances
+  # Type: string
+  baremetal_image: centos7-1901
+
+  # Prefix for the name of the baremetal instances
+  # Type: string
+  baremetal_prefix: baremetal
+
+  # The Nova flavor to use for the bmc instance
+  # Type: string
+  bmc_flavor: bmc
+
+  # The base image for the bmc instance.  A CentOS 7 image is currently the
+  # only one supported.
+  # Type: string
+  bmc_image: bmc-base
+
+  # Prefix for the name of the bmc instance
+  # Type: string
+  bmc_prefix: bmc
+
+  # An external network from which floating ips can be provisioned
+  # Type: string
+  external_net: external
+
+  # Nova keypair to inject into the undercloud and bmc
+  # Type: string
+  key_name: jenkins
+
+  # Number of baremetal nodes to deploy
+  # Type: number
+  node_count: 0
+
+  # Name of a private network which can have floating ips associated with it
+  # Type: string
+  private_net: private-mdns
+
+  # Name of a network that will be used for provisioning traffic
+  # Type: string
+  provision_net: provision
+
+  # Whether this network should be shared across all tenants
+  # Type: boolean
+  provision_net_shared: False
+
+  # Name of the overcloud external network
+  # Type: string
+  public_net: public
+
+  # Whether this network should be shared across all tenants
+  # Type: boolean
+  public_net_shared: False
+
+  # The default role for nodes in this environment.  This parameter is
+  # ignored by Heat, but used by build-nodes-json.
+  # Type: string
+  role: ''
+
+  # Nova flavor to use for the undercloud instance
+  # Type: string
+  undercloud_flavor: m1.small
+
+  # Image to boot as the undercloud instance
+  # Type: string
+  undercloud_image: centos7-1901
+
+  # Name of the undercloud instance
+  # Type: string
+  undercloud_name: undercloud
+EOF
+
+cat > role-mdns.yaml << EOF
+parameter_defaults:
+  # Recommended to be at least 1 vcpu, 4 GB RAM, 50 GB disk
+  # Type: string
+  baremetal_flavor: m1.small
+
+  # The base image to use for baremetal instances
+  # Type: string
+  baremetal_image: centos7-1901
+
+  # Nova keypair to inject into the undercloud and bmc
+  # Type: string
+  key_name: jenkins
+
+  # Number of baremetal nodes to deploy
+  # Type: number
+  node_count: 2
+
+  # The default role for nodes in this environment.  This parameter is
+  # ignored by Heat, but used by build-nodes-json.
+  # Type: string
+  role: master
+
+resource_registry:
+  OS::OVB::BaremetalPorts: templates/baremetal-ports-extra-node-all.yaml
+EOF
+
+# TODO(bnemec): Randomize id so parallel builds are possible
+ovb-deploy --quintupleo --name mdns-test --id mdns-test --poll -e env.yaml -e environments/create-private-network.yaml --role role-mdns.yaml
+
+function cleanup
+{
+    openstack stack delete -y mdns-test-master
+    openstack stack delete --wait -y mdns-test
+}
+trap cleanup EXIT
+
+undercloud_ip=$(openstack stack output show -f value -c output_value mdns-test undercloud_host_floating_ip)
+
+ovb-build-nodes-json -e env-mdns-test.yaml --network_details
+master0=$(jq -c .network_details[\"baremetal-mdns-test-master_0\"].ips[\"private-mdns\"][0].addr nodes.json | sed -e 's/"//g')
+master1=$(jq -c .network_details[\"baremetal-mdns-test-master_1\"].ips[\"private-mdns\"][0].addr nodes.json | sed -e 's/"//g')
+
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /var/lib/jenkins/id_rsa.jenkins"
+scp $SSH_OPTS /var/lib/jenkins/scripts/coredns-mdns-build centos@$undercloud_ip:~
+scp -r $SSH_OPTS ${WORKSPACE}/src centos@$undercloud_ip:~/${project}
+# It would be better to not have the private ssh key on a test VM, but this is
+# a fairly disposable Jenkins-specific key so if it gets compromised the
+# consequences are minimal. Congratulations, you have ssh access to environments
+# that aren't publicly accessible. :-)
+scp $SSH_OPTS /var/lib/jenkins/id_rsa.jenkins centos@$undercloud_ip:~/.ssh/id_rsa
+ssh $SSH_OPTS centos@$undercloud_ip /home/centos/coredns-mdns-build $master0 $master1

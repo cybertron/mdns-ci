@@ -1,0 +1,139 @@
+#!/bin/bash
+
+set -ex
+set -o pipefail
+
+master0=$1
+master1=$2
+
+timeout=15
+
+sudo yum install -y git epel-release bind-utils
+# From epel, so has to be installed after
+sudo yum install -y golang
+
+# Make it re-runnable for dev purposes
+sudo rm -rf /home/centos/go
+
+# Clone all the things
+mkdir -p /home/centos/go/src/github.com/openshift-metalkube
+cd /home/centos/go/src/github.com/openshift-metalkube
+if [ -d /home/centos/coredns-mdns ]
+then
+    mv /home/centos/coredns-mdns .
+else
+    git clone https://github.com/openshift-metalkube/coredns-mdns
+fi
+if [ -d /home/centos/mdns-publisher ]
+then
+    mv /home/centos/mdns-publisher .
+else
+    git clone https://github.com/openshift-metalkube/mdns-publisher
+fi
+
+cd ..
+mkdir coredns
+cd coredns
+git clone https://github.com/coredns/coredns
+
+# Build coredns
+cd coredns
+git apply ../../openshift-metalkube/coredns-mdns/containerization/mdns.patch
+sed -i -e 's|=> /go|=> /home/centos/go|' go.mod
+make
+cat > Corefile << EOF
+. {
+	errors
+	health
+	mdns foo.com
+	forward . 11.1.1.1
+	reload
+	debug
+}
+EOF
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+scp $SSH_OPTS coredns Corefile $master0:~
+
+# Build mdns-publisher
+go get -v github.com/grandcat/zeroconf
+cd /home/centos/go/src/github.com/grandcat/zeroconf
+git remote add celebdor https://github.com/celebdor/zeroconf
+git fetch celebdor
+git checkout celebdor/register-svc-entry
+go get -v github.com/spf13/viper github.com/spf13/cobra github.com/sirupsen/logrus
+cd /home/centos/go/src/github.com/openshift-metalkube/mdns-publisher
+go build
+
+cat > config0.hcl << EOF
+bind_address = "ADDR"
+collision_avoidance = "hostname"
+
+service {
+    name = "Etcd"
+    host_name = "master-0.local."
+    type = "_etcd-server-ssl._tcp"
+    domain = "local."
+    port = 2380
+    ttl = 300
+}
+
+service {
+    name = "workstation"
+    host_name = "master-0.local."
+    type = "_workstation._tcp"
+    domain = "local."
+    port = 42424
+    ttl = 300
+}
+EOF
+sed -i -e "s/ADDR/$master0/" config0.hcl
+scp $SSH_OPTS mdns-publisher $master0:~
+scp $SSH_OPTS config0.hcl $master0:~/config.hcl
+# This is kind of ugly. SSH in and start the service with a timeout so it will
+# stop on its own and not hold the job open indefinitely.
+ssh $SSH_OPTS $master0 timeout --preserve-status $timeout /home/centos/mdns-publisher --config /home/centos/config.hcl &
+
+cat > config1.hcl << EOF
+bind_address = "ADDR"
+collision_avoidance = "hostname"
+
+service {
+    name = "Etcd"
+    host_name = "master-1.local."
+    type = "_etcd-server-ssl._tcp"
+    domain = "local."
+    port = 2380
+    ttl = 300
+}
+
+service {
+    name = "workstation"
+    host_name = "master-1.local."
+    type = "_workstation._tcp"
+    domain = "local."
+    port = 42424
+    ttl = 300
+}
+EOF
+sed -i -e "s/ADDR/$master1/" config1.hcl
+scp $SSH_OPTS mdns-publisher $master1:~
+scp $SSH_OPTS config1.hcl $master1:~/config.hcl
+ssh $SSH_OPTS $master1 timeout --preserve-status $timeout /home/centos/mdns-publisher --config /home/centos/config.hcl &
+
+# Start coredns
+ssh $SSH_OPTS $master0 sudo timeout --preserve-status $timeout ./coredns &
+
+# Give the server time to pick up the new entries
+sleep 6
+
+a=$(dig +noall +answer @$master0 master-0.foo.com master-1.foo.com)
+echo $a | grep -q "master-0\.foo\.com\..*$master0"
+echo $a | grep -q "master-1\.foo\.com\..*$master1"
+cname=$(dig +noall +answer @$master0 etcd-0.foo.com etcd-1.foo.com)
+echo $cname | grep -q "etcd-0\.foo\.com\..*master-0\.foo\.com\."
+echo $cname | grep -q "etcd-1\.foo\.com\..*master-1\.foo\.com\."
+echo $cname | grep -q "master-0\.foo\.com\..*$master0"
+echo $cname | grep -q "master-1\.foo\.com\..*$master1"
+srv=$(dig +noall +answer @$master0 _etcd-server-ssl._tcp.foo.com srv)
+echo $srv | grep -q "_etcd-server-ssl\._tcp\.foo\.com\..*etcd-0\.foo\.com\."
+echo $srv | grep -q "_etcd-server-ssl\._tcp\.foo\.com\..*etcd-1\.foo\.com\."
