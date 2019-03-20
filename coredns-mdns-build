@@ -8,9 +8,40 @@ master1=$2
 
 timeout=15
 
+# Set up proxy to avoid pissing off my ISP
+export http_proxy=11.2.2.10:3128
+echo "proxy=http://11.2.2.10:3128" | sudo tee -a /etc/yum.conf
+
+# Trust the proxy's self-signed certificate
+cat > proxy.pem << EOF
+-----BEGIN CERTIFICATE-----
+MIIDGjCCAgICCQCNxdrZ1PPMRDANBgkqhkiG9w0BAQUFADBPMQswCQYDVQQGEwJV
+UzELMAkGA1UECAwCTU4xEjAQBgNVBAcMCVJvY2hlc3RlcjEQMA4GA1UECgwHUmVk
+IEhhdDENMAsGA1UEAwwEcm94eTAeFw0xOTAzMjAyMDIwMzhaFw0yOTAzMTkyMDIw
+MzhaME8xCzAJBgNVBAYTAlVTMQswCQYDVQQIDAJNTjESMBAGA1UEBwwJUm9jaGVz
+dGVyMRAwDgYDVQQKDAdSZWQgSGF0MQ0wCwYDVQQDDARyb3h5MIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAslNsb9yLlzQU7+wF6l4hLsNs7TxR3iSgPzVP
+AaJ6xAyiZQ0V+XUiRB6t6dzzucfW09B5dl1iV2MwUBmr/eIE4U5GIhJt8vMwdrEf
+JUpjdIXeijgFX6qTjJCwAGUVMdeYjyLVyNMHBLP6EiSjtFpYu30WKi+cJZBXWjTN
+HP5MbLkugO48Qk05b5x6vUyx6qtjGWcFsYNisuYTPxP/V3sLVQUqhl8CG5sGxWGz
+r9OVDaVKgh1kYzx/FaptvywycEBOgDLvF8YSSwPCOiF8I3zgCWZwNOUlQhG5aQ3t
+itmyNXjib9gsCLO3UbhoMKcsp21ZCQSbptUs94OY/8exW6mNGwIDAQABMA0GCSqG
+SIb3DQEBBQUAA4IBAQCfyP140PZ2MXj1ilX16mw1kPp3sH1YFk1T9LJrbBKMUJ52
+bMwHAJAypMTTDFJCeRvGJHBClpl9hZT22/Ug+s0CEL6i/Z4EHmoTqyHeuGW+vdSM
+zsQWRu5pEDu1xPnsazvdeNzuZOgvI/tpG7CKsj/fPGFOdwmq3jaEJn8B/AOMMkpJ
+AwuFXN6D31Gr1KPlMD1Pv204KcMzLeJaqqg3gPsP6cXx0PeaKOWyK3rgjZrSs4mB
+MuVme+W07ZgVJ5qxm+CFyhiag2WZJoYs6hysDKOfuI40jdSKGncpl4PNog4FPsgv
+Iw8pZJ8y/KFSIlrHvvutHyo/xumnsbnrBhSG//M7
+-----END CERTIFICATE-----
+EOF
+sudo mv proxy.pem /etc/pki/ca-trust/source/anchors
+sudo update-ca-trust extract
+
 sudo yum install -y git epel-release bind-utils
 # From epel, so has to be installed after
 sudo yum install -y golang
+
+git config --global http.proxy http://11.2.2.10:3128
 
 # Make it re-runnable for dev purposes
 sudo rm -rf /home/centos/go
@@ -45,7 +76,7 @@ cat > Corefile << EOF
 . {
 	errors
 	health
-	mdns foo.com
+	mdns foo.com 2
 	forward . 11.1.1.1
 	reload
 	debug
@@ -137,3 +168,13 @@ echo $cname | grep -q "master-1\.foo\.com\..*$master1"
 srv=$(dig +noall +answer @$master0 _etcd-server-ssl._tcp.foo.com srv)
 echo $srv | grep -q "_etcd-server-ssl\._tcp\.foo\.com\..*etcd-0\.foo\.com\."
 echo $srv | grep -q "_etcd-server-ssl\._tcp\.foo\.com\..*etcd-1\.foo\.com\."
+
+echo "********************************"
+echo "            Success!"
+echo "********************************"
+
+set +e
+ssh $SSH_OPTS $master0 sudo pkill -f coredns
+# Not sure why sudo is required for these. They weren't started as root.
+ssh $SSH_OPTS $master0 sudo pkill -f mdns-publisher
+ssh $SSH_OPTS $master1 sudo pkill -f mdns-publisher
