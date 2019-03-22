@@ -14,7 +14,7 @@ then
     git clone https://git.openstack.org/openstack/openstack-virtual-baremetal
     # FIXME(bnemec): Remove this hack once the patches have merged
     pushd openstack-virtual-baremetal
-    git fetch https://git.openstack.org/openstack/openstack-virtual-baremetal refs/changes/62/636762/2 && git checkout FETCH_HEAD
+    git fetch https://git.openstack.org/openstack/openstack-virtual-baremetal refs/changes/86/645286/1 && git checkout FETCH_HEAD
     popd
     virtualenv ovb
 fi
@@ -39,7 +39,7 @@ parameter_defaults:
 
   # The base image to use for baremetal instances
   # Type: string
-  baremetal_image: centos7-1901
+  baremetal_image: mdns-test-base
 
   # Prefix for the name of the baremetal instances
   # Type: string
@@ -101,7 +101,7 @@ parameter_defaults:
 
   # Image to boot as the undercloud instance
   # Type: string
-  undercloud_image: centos7-1901
+  undercloud_image: mdns-test-base
 
   # Name of the undercloud instance
   # Type: string
@@ -131,12 +131,16 @@ parameter_defaults:
   # Type: string
   role: master
 
+  baremetal_name_template: master-%index%
+
 resource_registry:
   OS::OVB::BaremetalPorts: templates/baremetal-ports-extra-node-all.yaml
+  # Need a BMC so we can run ovb-build-nodes-json
+  OS::OVB::BMC: templates/bmc.yaml
 EOF
 
 # TODO(bnemec): Randomize id so parallel builds are possible
-ovb-deploy --quintupleo --name mdns-test --id mdns-test --poll -e env.yaml -e environments/create-private-network.yaml --role role-mdns.yaml
+ovb-deploy --quintupleo --name mdns-test --id mdns-test --poll -e env.yaml -e environments/create-private-network.yaml -e environments/disable-bmc.yaml --role role-mdns.yaml
 
 function cleanup
 {
@@ -148,15 +152,27 @@ trap cleanup EXIT
 undercloud_ip=$(openstack stack output show -f value -c output_value mdns-test undercloud_host_floating_ip)
 
 ovb-build-nodes-json -e env-mdns-test.yaml --network_details
-master0=$(jq -c .network_details[\"baremetal-mdns-test-master_0\"].ips[\"private-mdns\"][0].addr nodes.json | sed -e 's/"//g')
-master1=$(jq -c .network_details[\"baremetal-mdns-test-master_1\"].ips[\"private-mdns\"][0].addr nodes.json | sed -e 's/"//g')
+master0=$(jq -c .network_details[\"master-0\"].ips[\"private-mdns\"][0].addr nodes.json | sed -e 's/"//g')
+master1=$(jq -c .network_details[\"master-1\"].ips[\"private-mdns\"][0].addr nodes.json | sed -e 's/"//g')
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /var/lib/jenkins/id_rsa.jenkins"
 scp $SSH_OPTS /var/lib/jenkins/scripts/coredns-mdns-build centos@$undercloud_ip:~
-scp -r $SSH_OPTS ${WORKSPACE}/src centos@$undercloud_ip:~/${project}
+scp $SSH_OPTS -r ${WORKSPACE}/src centos@$undercloud_ip:~/${project}
+if [ -f ${WORKSPACE}/go.tar ]
+then
+    scp $SSH_OPTS -r ${WORKSPACE}/go.tar centos@$undercloud_ip:~
+    ssh $SSH_OPTS centos@$undercloud_ip tar xf /home/centos/go.tar
+fi
 # It would be better to not have the private ssh key on a test VM, but this is
 # a fairly disposable Jenkins-specific key so if it gets compromised the
 # consequences are minimal. Congratulations, you have ssh access to environments
 # that aren't publicly accessible. :-)
 scp $SSH_OPTS /var/lib/jenkins/id_rsa.jenkins centos@$undercloud_ip:~/.ssh/id_rsa
 ssh $SSH_OPTS centos@$undercloud_ip /home/centos/coredns-mdns-build $master0 $master1
+
+# This is irrelevant to the test results, don't fail even if something goes wrong
+set +e
+# Save the go/pkg directory so future runs will not have to re-download
+rm -f ${WORKSPACE}/go.tar
+ssh $SSH_OPTS centos@$undercloud_ip tar cf /home/centos/go.tar go/pkg
+scp $SSH_OPTS -r centos@$undercloud_ip:/home/centos/go.tar ${WORKSPACE}/go.tar

@@ -8,12 +8,15 @@ master1=$2
 
 timeout=15
 
-sudo yum install -y git epel-release bind-utils
-# From epel, so has to be installed after
-sudo yum install -y golang
+if ! rpm -qa | grep -q golang
+then
+    sudo yum install -y git epel-release bind-utils
+    # From epel, so has to be installed after
+    sudo yum install -y golang
+fi
 
 # Make it re-runnable for dev purposes
-sudo rm -rf /home/centos/go
+sudo rm -rf /home/centos/go/src
 
 # Clone all the things
 mkdir -p /home/centos/go/src/github.com/openshift-metalkube
