@@ -73,7 +73,7 @@ collision_avoidance = "hostname"
 
 service {
     name = "Etcd"
-    host_name = "master-0.local."
+    host_name = "etcd-0.local."
     type = "_etcd-server-ssl._tcp"
     domain = "local."
     port = 2380
@@ -83,6 +83,15 @@ service {
 service {
     name = "workstation"
     host_name = "master-0.local."
+    type = "_workstation._tcp"
+    domain = "local."
+    port = 42424
+    ttl = 300
+}
+
+service {
+    name = "EtcdWorkstation"
+    host_name = "etcd-0.local."
     type = "_workstation._tcp"
     domain = "local."
     port = 42424
@@ -102,7 +111,7 @@ collision_avoidance = "hostname"
 
 service {
     name = "Etcd"
-    host_name = "master-1.local."
+    host_name = "etcd-1.local."
     type = "_etcd-server-ssl._tcp"
     domain = "local."
     port = 2380
@@ -112,6 +121,15 @@ service {
 service {
     name = "workstation"
     host_name = "master-1.local."
+    type = "_workstation._tcp"
+    domain = "local."
+    port = 42424
+    ttl = 300
+}
+
+service {
+    name = "EtcdWorkstation"
+    host_name = "etcd-1.local."
     type = "_workstation._tcp"
     domain = "local."
     port = 42424
@@ -132,11 +150,9 @@ sleep 6
 a=$(dig +noall +answer @$master0 master-0.foo.com master-1.foo.com)
 echo $a | grep -q "master-0\.foo\.com\..*$master0"
 echo $a | grep -q "master-1\.foo\.com\..*$master1"
-cname=$(dig +noall +answer @$master0 etcd-0.foo.com etcd-1.foo.com)
-echo $cname | grep -q "etcd-0\.foo\.com\..*master-0\.foo\.com\."
-echo $cname | grep -q "etcd-1\.foo\.com\..*master-1\.foo\.com\."
-echo $cname | grep -q "master-0\.foo\.com\..*$master0"
-echo $cname | grep -q "master-1\.foo\.com\..*$master1"
+etcd=$(dig +noall +answer @$master0 etcd-0.foo.com etcd-1.foo.com)
+echo $etcd | grep -q "etcd-0\.foo\.com\..*$master0"
+echo $etcd | grep -q "etcd-1\.foo\.com\..*$master1"
 srv=$(dig +noall +answer @$master0 _etcd-server-ssl._tcp.foo.com srv)
 echo $srv | grep -q "_etcd-server-ssl\._tcp\.foo\.com\..*etcd-0\.foo\.com\."
 echo $srv | grep -q "_etcd-server-ssl\._tcp\.foo\.com\..*etcd-1\.foo\.com\."
