@@ -1,20 +1,12 @@
 # mdns-ci
 
-Scripts that can be used with Jenkins to run CI on the openshift-metalkube/coredns-mdns
-and openshift-metalkube/mdns-publisher repos.
+Scripts that can be used with Jenkins to run CI on the `openshift-metalkube/coredns-mdns`
+and `openshift-metalkube/mdns-publisher` repos.
 
 ## Usage
 
-The two scripts must be placed in `/var/lib/jenkins/scripts`. Then configure the Jenkins
-job to run `coredns-mdns-integration`. That script will stand up an OVB environment and
-copy the `coredns-mdns-build` script to the "undercloud" and then run it.
-
-`coredns-mdns-integration` takes one parameter, which is the name of the repo under
-test. For example, to test coredns-mdns, the Jenkins job should be configured to call
-`/var/lib/jenkins/scripts/coredns-mdns-integration coredns-mdns`.
-
-Note that the Jenkins job must also be configured to check the repo under test out
-to a `src` subdirectory in the workspace.
+To use these scripts, configure a `Multibranch Pipeline` job in Jenkins. Add a GitHub
+`Branch Source` and configure it with the appropriate repo details.
 
 ## Other Dependencies
 
@@ -23,9 +15,11 @@ cloud. There must also be an SSH private key there which allows access to a keyp
 in the target cloud called "jenkins". The private key file should be named
 `id_rsa.jenkins`. This key will be used to SSH into the nodes created by OVB.
 
-There are OVB configurations in coredns-mdns-integration that may need to be updated
-to match the target cloud (images, flavors, etc.).
+The Jenkins GitHub plugin must be properly configured for Jenkins to vote on PRs or
+branches. This can be found in `Manage Jenkins->Configure System->GitHub`. On that
+same configuration page, under `Lockable Resources Manager`, create a resource named
+`mdns`, which will be used to prevent multiple jobs from running at once. The id of
+the OVB environment is currently hard-coded, so only one job can run at once.
 
-Also, be aware that the id of the OVB environment is currently hard-coded, so it is
-only possible to run one job at a time in a single tenant. This could be fixed, but
-for the moment there isn't enough activity on these repos to require parallel jobs.
+There are OVB configurations in `coredns-mdns-integration` that may need to be updated
+to match the target cloud (images, flavors, etc.).
